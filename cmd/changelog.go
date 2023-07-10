@@ -7,11 +7,27 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strconv"
+	"strings"
+	"time"
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/leodido/go-conventionalcommits"
+	"github.com/leodido/go-conventionalcommits/parser"
+	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 )
+
+type ParsedCommit struct {
+	Hash, ShortHash, Body string
+	Date                  time.Time
+	ParsedBody            conventionalcommits.Message
+}
+
+func (p ParsedCommit) String() string {
+	return fmt.Sprintf("Date: %s\tHash: %s\tShortHash: %s\tBody: %s\t Parsing OK : %t", p.Date.Format("2006-01-02 15:04:05"), p.Hash, p.ShortHash, p.Body, p.ParsedBody.Ok())
+}
 
 // changelogCmd represents the changelog command
 var changelogCmd = &cobra.Command{
@@ -35,7 +51,6 @@ to quickly create a Cobra application.`,
 		}
 
 		currentBranch := headRef.Name().Short()
-		fmt.Println(currentBranch)
 		ref := plumbing.NewHashReference(plumbing.ReferenceName(currentBranch), headRef.Hash())
 
 		err = repo.Storer.SetReference(ref)
@@ -43,13 +58,44 @@ to quickly create a Cobra application.`,
 			log.Fatal(err)
 		}
 
-		gitLog := exec.Command("git", "log", "--no-merges", "^main")
+		format := "%H\xbd%h\xbd%ct\xbd%B"
+
+		gitLog := exec.Command("git", "log", "--no-merges", "--format="+format, currentBranch, "^main")
 		output, err := gitLog.Output()
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		fmt.Println(string(output))
+		p := parser.NewMachine(parser.WithBestEffort(), conventionalcommits.WithTypes(conventionalcommits.TypesFalco))
+
+		var parsedCommits []ParsedCommit
+		for _, v := range strings.Split(string(output), "\n") {
+			if v == "" {
+				continue
+			}
+			splitted := strings.Split(v, "\xbd")
+			fmt.Println(splitted, len(splitted))
+			timestamp, err := strconv.ParseInt(splitted[2], 10, 64)
+			if err != nil {
+				log.Fatal(err)
+			}
+			parsedBody, err := p.Parse([]byte(splitted[3]))
+			if err != nil {
+				log.Println(err)
+			}
+			commit := &ParsedCommit{
+				Hash:       splitted[0],
+				ShortHash:  splitted[1],
+				Date:       time.Unix(timestamp, 0),
+				Body:       splitted[3],
+				ParsedBody: parsedBody,
+			}
+			parsedCommits = append(parsedCommits, *commit)
+		}
+
+		lo.ForEach(parsedCommits, func(pc ParsedCommit, _ int) {
+			fmt.Println(pc)
+		})
 
 		// repo.
 		// commits, err := repo.Log(&git.LogOptions{From: ref.Hash()})
